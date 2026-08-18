@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Link Chess</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <style>
   :root {
     --light: #f0d9b5;
@@ -177,7 +179,13 @@
 </head>
 <body>
 <h1>Link Chess — make a move, then send the link</h1>
-<div class="layout">
+
+<div id="landing" style="display:none; flex-direction:column; align-items:center; gap:14px; max-width:400px; text-align:center;">
+  <p>Start a game, then send the link to your opponent. The link stays the same for the whole game — just refresh it to see the other player's move.</p>
+  <button id="start-btn">Start new game</button>
+</div>
+
+<div class="layout" id="game-layout" style="display:none;">
   <div id="board-wrap">
     <div id="board"></div>
     <div id="drag-ghost"></div>
@@ -212,12 +220,27 @@
 
 <script>
 (function () {
+  const firebaseConfig = {
+    apiKey: "AIzaSyBkjv9MepHUKol6NSf7qNt5i48_1L2JsTM",
+    authDomain: "chess-link-6decc.firebaseapp.com",
+    databaseURL: "https://chess-link-6decc-default-rtdb.firebaseio.com",
+    projectId: "chess-link-6decc",
+    storageBucket: "chess-link-6decc.firebasestorage.app",
+    messagingSenderId: "939953923414",
+    appId: "1:939953923414:web:cc925aa5e4088c8aa1e2f7"
+  };
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+
   const PIECE_GLYPHS = {
     w: { p: '♙', n: '♘', b: '♗', r: '♖', q: '♕', k: '♔' },
     b: { p: '♟', n: '♞', b: '♝', r: '♜', q: '♛', k: '♚' }
   };
   const FILES = ['a','b','c','d','e','f','g','h'];
 
+  const landingEl = document.getElementById('landing');
+  const gameLayoutEl = document.getElementById('game-layout');
+  const startBtn = document.getElementById('start-btn');
   const boardEl = document.getElementById('board');
   const ghostEl = document.getElementById('drag-ghost');
   const statusEl = document.getElementById('status');
@@ -231,20 +254,14 @@
   let chess = new Chess();
   let moveList = []; // array of "e2e4" / "e7e8q" strings, in order played
   let lastMoveSquares = null; // {from, to}
+  let gameId = null;
+  let gameRef = null;
 
-  function encodeMoves(moves) {
-    return moves.join('.');
-  }
-  function decodeMoves(str) {
-    if (!str) return [];
-    return str.split('.').filter(Boolean);
+  function genGameId() {
+    return Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8);
   }
 
-  function loadFromHash() {
-    const hash = window.location.hash.replace(/^#/, '');
-    const params = new URLSearchParams(hash);
-    const m = params.get('m') || '';
-    const moves = decodeMoves(m);
+  function rebuildFromMoves(moves) {
     chess = new Chess();
     lastMoveSquares = null;
     for (const mv of moves) {
@@ -252,10 +269,7 @@
       const to = mv.slice(2, 4);
       const promotion = mv.slice(4, 5) || undefined;
       const res = chess.move({ from, to, promotion });
-      if (!res) {
-        // corrupted/invalid link data; stop replay at last good state
-        break;
-      }
+      if (!res) break; // corrupted data; stop replay at last good state
       lastMoveSquares = { from, to };
     }
     moveList = moves;
@@ -263,14 +277,42 @@
 
   function currentUrl() {
     const base = window.location.origin + window.location.pathname;
-    const q = moveList.length ? ('#m=' + encodeMoves(moveList)) : '';
-    return base + q;
+    return base + '#g=' + gameId;
   }
 
   function updateUrlBar() {
     const url = currentUrl();
     linkInput.value = url;
     history.replaceState(null, '', url);
+  }
+
+  function attachGameListener(id) {
+    if (gameRef) gameRef.off();
+    gameId = id;
+    gameRef = db.ref('games/' + gameId);
+    gameRef.on('value', (snapshot) => {
+      const data = snapshot.val();
+      const moves = (data && data.moves) ? data.moves : [];
+      rebuildFromMoves(moves);
+      render();
+    });
+  }
+
+  function startNewGame() {
+    const id = genGameId();
+    db.ref('games/' + id).set({ moves: [] });
+    attachGameListener(id);
+    showGame();
+  }
+
+  function showGame() {
+    landingEl.style.display = 'none';
+    gameLayoutEl.style.display = 'flex';
+  }
+
+  function showLanding() {
+    landingEl.style.display = 'flex';
+    gameLayoutEl.style.display = 'none';
   }
 
   function squareId(file, rank) {
@@ -380,6 +422,7 @@
     moveList.push(from + to + (promotion || ''));
     lastMoveSquares = { from, to };
     render();
+    gameRef.set({ moves: moveList });
     return true;
   }
 
@@ -467,12 +510,11 @@
 
   document.getElementById('new-btn').addEventListener('click', () => {
     if (!confirm('Start a brand new game? This creates a fresh link.')) return;
-    moveList = [];
-    chess = new Chess();
-    lastMoveSquares = null;
     flipped = false;
-    render();
+    startNewGame();
   });
+
+  startBtn.addEventListener('click', startNewGame);
 
   document.getElementById('copy-btn').addEventListener('click', async () => {
     const url = linkInput.value;
@@ -495,13 +537,19 @@
     setTimeout(() => { copiedMsg.style.visibility = 'hidden'; }, 1500);
   }
 
-  window.addEventListener('hashchange', () => {
-    loadFromHash();
-    render();
-  });
+  function init() {
+    const hash = window.location.hash.replace(/^#/, '');
+    const params = new URLSearchParams(hash);
+    const g = params.get('g');
+    if (g) {
+      attachGameListener(g);
+      showGame();
+    } else {
+      showLanding();
+    }
+  }
 
-  loadFromHash();
-  render();
+  init();
 })();
 </script>
 </body>
