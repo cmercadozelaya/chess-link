@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Link Chess</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<style>
+  :root {
+    --light: #f0d9b5;
+    --dark: #b58863;
+    --highlight: #f6f669;
+    --move-dot: rgba(20, 85, 30, 0.55);
+    --last-move: rgba(155, 199, 0, 0.41);
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #1e1e1e;
+    color: #eee;
+    margin: 0;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+  }
+  h1 { font-size: 1.3rem; margin: 0 0 12px; color: #fff; }
+  .layout {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: flex-start;
+  }
+  #board-wrap {
+    position: relative;
+    width: min(90vw, 480px);
+    height: min(90vw, 480px);
+    user-select: none;
+    touch-action: none;
+  }
+  #board {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+    width: 100%;
+    height: 100%;
+    border: 4px solid #3a2a1a;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+  }
+  .square {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .square.light { background: var(--light); }
+  .square.dark { background: var(--dark); }
+  .square.highlight { box-shadow: inset 0 0 0 4px var(--highlight); }
+  .square.last-move { background-image: linear-gradient(var(--last-move), var(--last-move)); }
+  .square .dot {
+    position: absolute;
+    width: 24%;
+    height: 24%;
+    border-radius: 50%;
+    background: var(--move-dot);
+    pointer-events: none;
+  }
+  .square .dot.capture {
+    width: 82%;
+    height: 82%;
+    background: transparent;
+    border: 6px solid var(--move-dot);
+    border-radius: 50%;
+    box-sizing: border-box;
+  }
+  .coord {
+    position: absolute;
+    font-size: 0.6rem;
+    color: rgba(0,0,0,0.45);
+    pointer-events: none;
+  }
+  .coord.file { bottom: 2px; right: 4px; }
+  .coord.rank { top: 2px; left: 4px; }
+  .piece {
+    font-size: min(9vw, 42px);
+    line-height: 1;
+    cursor: grab;
+    position: relative;
+    z-index: 2;
+  }
+  .piece.white { color: #fff; text-shadow: 0 0 2px #000, 0 0 1px #000, 1px 1px 1px #000; }
+  .piece.black { color: #111; text-shadow: 0 0 2px #ccc; }
+  .piece.dragging { cursor: grabbing; opacity: 0.35; }
+  .piece.locked { cursor: default; }
+  #drag-ghost {
+    position: fixed;
+    pointer-events: none;
+    z-index: 999;
+    font-size: min(9vw, 42px);
+    transform: translate(-50%, -50%);
+    display: none;
+  }
+  .panel {
+    width: min(90vw, 340px);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .status {
+    background: #2a2a2a;
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 0.95rem;
+    min-height: 3.2em;
+  }
+  .status b { color: #ffd166; }
+  .link-box {
+    background: #2a2a2a;
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .link-box label { display: block; font-size: 0.8rem; color: #aaa; margin-bottom: 6px; }
+  .link-row { display: flex; gap: 6px; }
+  .link-row input {
+    flex: 1;
+    padding: 8px;
+    border-radius: 6px;
+    border: 1px solid #444;
+    background: #111;
+    color: #eee;
+    font-size: 0.8rem;
+  }
+  button {
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: none;
+    background: #4a7a4a;
+    color: #fff;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  button:hover { background: #5a9a5a; }
+  button.secondary { background: #555; }
+  button.secondary:hover { background: #666; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  .history {
+    background: #2a2a2a;
+    border-radius: 8px;
+    padding: 12px 14px;
+    max-height: 220px;
+    overflow-y: auto;
+    font-size: 0.85rem;
+  }
+  .history ol { margin: 0; padding-left: 20px; }
+  .history li { margin-bottom: 2px; }
+  #promo-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+  #promo-modal .box {
+    background: #2a2a2a;
+    padding: 20px;
+    border-radius: 10px;
+    text-align: center;
+  }
+  #promo-modal .choices { display: flex; gap: 10px; margin-top: 10px; }
+  #promo-modal button { font-size: 1.6rem; padding: 10px 14px; }
+  .copied-msg { color: #8f8; font-size: 0.8rem; }
+</style>
+</head>
+<body>
+<h1>Link Chess — make a move, then send the link</h1>
+<div class="layout">
+  <div id="board-wrap">
+    <div id="board"></div>
+    <div id="drag-ghost"></div>
+  </div>
+  <div class="panel">
+    <div class="status" id="status"></div>
+    <div class="link-box">
+      <label>Send this link to your opponent:</label>
+      <div class="link-row">
+        <input type="text" id="link-input" readonly>
+        <button id="copy-btn">Copy</button>
+      </div>
+      <div class="copied-msg" id="copied-msg" style="visibility:hidden">Copied!</div>
+    </div>
+    <div class="controls">
+      <button class="secondary" id="flip-btn">Flip board</button>
+      <button class="secondary" id="new-btn">New game</button>
+    </div>
+    <div class="history">
+      <label style="font-size:0.8rem;color:#aaa;">Move history</label>
+      <ol id="history-list"></ol>
+    </div>
+  </div>
+</div>
+
+<div id="promo-modal">
+  <div class="box">
+    <div>Promote pawn to:</div>
+    <div class="choices" id="promo-choices"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const PIECE_GLYPHS = {
+    w: { p: '♙', n: '♘', b: '♗', r: '♖', q: '♕', k: '♔' },
+    b: { p: '♟', n: '♞', b: '♝', r: '♜', q: '♛', k: '♚' }
+  };
+  const FILES = ['a','b','c','d','e','f','g','h'];
+
+  const boardEl = document.getElementById('board');
+  const ghostEl = document.getElementById('drag-ghost');
+  const statusEl = document.getElementById('status');
+  const linkInput = document.getElementById('link-input');
+  const copiedMsg = document.getElementById('copied-msg');
+  const historyList = document.getElementById('history-list');
+  const promoModal = document.getElementById('promo-modal');
+  const promoChoices = document.getElementById('promo-choices');
+
+  let flipped = false;
+  let chess = new Chess();
+  let moveList = []; // array of "e2e4" / "e7e8q" strings, in order played
+  let lastMoveSquares = null; // {from, to}
+
+  function encodeMoves(moves) {
+    return moves.join('.');
+  }
+  function decodeMoves(str) {
+    if (!str) return [];
+    return str.split('.').filter(Boolean);
+  }
+
+  function loadFromHash() {
+    const hash = window.location.hash.replace(/^#/, '');
+    const params = new URLSearchParams(hash);
+    const m = params.get('m') || '';
+    const moves = decodeMoves(m);
+    chess = new Chess();
+    lastMoveSquares = null;
+    for (const mv of moves) {
+      const from = mv.slice(0, 2);
+      const to = mv.slice(2, 4);
+      const promotion = mv.slice(4, 5) || undefined;
+      const res = chess.move({ from, to, promotion });
+      if (!res) {
+        // corrupted/invalid link data; stop replay at last good state
+        break;
+      }
+      lastMoveSquares = { from, to };
+    }
+    moveList = moves;
+  }
+
+  function currentUrl() {
+    const base = window.location.origin + window.location.pathname;
+    const q = moveList.length ? ('#m=' + encodeMoves(moveList)) : '';
+    return base + q;
+  }
+
+  function updateUrlBar() {
+    const url = currentUrl();
+    linkInput.value = url;
+    history.replaceState(null, '', url);
+  }
+
+  function squareId(file, rank) {
+    return FILES[file] + rank;
+  }
+
+  function renderBoard() {
+    boardEl.innerHTML = '';
+    const turn = chess.turn(); // 'w' or 'b'
+    for (let r = 0; r < 8; r++) {
+      for (let f = 0; f < 8; f++) {
+        const rank = flipped ? (r + 1) : (8 - r);
+        const file = flipped ? (7 - f) : f;
+        const sq = squareId(file, rank);
+        const sqEl = document.createElement('div');
+        sqEl.className = 'square ' + (((file + rank) % 2 === 0) ? 'dark' : 'light');
+        sqEl.dataset.square = sq;
+        if (lastMoveSquares && (sq === lastMoveSquares.from || sq === lastMoveSquares.to)) {
+          sqEl.classList.add('last-move');
+        }
+        if (file === 0) {
+          const rc = document.createElement('div');
+          rc.className = 'coord rank';
+          rc.textContent = rank;
+          sqEl.appendChild(rc);
+        }
+        if (rank === 1) {
+          const fc = document.createElement('div');
+          fc.className = 'coord file';
+          fc.textContent = FILES[file];
+          sqEl.appendChild(fc);
+        }
+        const piece = chess.get(sq);
+        if (piece) {
+          const pEl = document.createElement('div');
+          pEl.className = 'piece ' + (piece.color === 'w' ? 'white' : 'black');
+          pEl.textContent = PIECE_GLYPHS[piece.color][piece.type];
+          pEl.dataset.square = sq;
+          const draggable = piece.color === turn && !chess.game_over();
+          if (!draggable) pEl.classList.add('locked');
+          sqEl.appendChild(pEl);
+        }
+        boardEl.appendChild(sqEl);
+      }
+    }
+  }
+
+  function clearHighlights() {
+    document.querySelectorAll('.square .dot').forEach(d => d.remove());
+    document.querySelectorAll('.square.highlight').forEach(s => s.classList.remove('highlight'));
+  }
+
+  function showLegalMoves(square) {
+    clearHighlights();
+    const origin = document.querySelector('.square[data-square="' + square + '"]');
+    if (origin) origin.classList.add('highlight');
+    const moves = chess.moves({ square, verbose: true });
+    for (const mv of moves) {
+      const targetEl = document.querySelector('.square[data-square="' + mv.to + '"]');
+      if (!targetEl) continue;
+      const dot = document.createElement('div');
+      dot.className = 'dot' + (mv.flags.includes('c') || mv.flags.includes('e') ? ' capture' : '');
+      targetEl.appendChild(dot);
+    }
+  }
+
+  function squareFromPoint(x, y) {
+    const el = document.elementFromPoint(x, y);
+    if (!el) return null;
+    const sqEl = el.closest('.square');
+    return sqEl ? sqEl.dataset.square : null;
+  }
+
+  function statusText() {
+    if (chess.in_checkmate()) {
+      const winner = chess.turn() === 'w' ? 'Black' : 'White';
+      return '<b>Checkmate!</b> ' + winner + ' wins.';
+    }
+    if (chess.in_stalemate()) return '<b>Stalemate.</b> Draw.';
+    if (chess.in_threefold_repetition()) return '<b>Draw</b> by threefold repetition.';
+    if (chess.in_draw()) return '<b>Draw</b> (50-move rule or insufficient material).';
+    const side = chess.turn() === 'w' ? 'White' : 'Black';
+    const check = chess.in_check() ? ' — <b>Check!</b>' : '';
+    return '<b>' + side + '</b> to move' + check + '.';
+  }
+
+  function renderHistory() {
+    historyList.innerHTML = '';
+    const verbose = chess.history({ verbose: true });
+    verbose.forEach((mv, i) => {
+      const li = document.createElement('li');
+      li.textContent = (i % 2 === 0 ? '' : '') + mv.san;
+      historyList.appendChild(li);
+    });
+  }
+
+  function render() {
+    renderBoard();
+    statusEl.innerHTML = statusText();
+    renderHistory();
+    updateUrlBar();
+  }
+
+  function commitMove(from, to, promotion) {
+    const res = chess.move({ from, to, promotion });
+    if (!res) return false;
+    moveList.push(from + to + (promotion || ''));
+    lastMoveSquares = { from, to };
+    render();
+    return true;
+  }
+
+  function needsPromotion(from, to) {
+    const piece = chess.get(from);
+    if (!piece || piece.type !== 'p') return false;
+    const destRank = to[1];
+    return (piece.color === 'w' && destRank === '8') || (piece.color === 'b' && destRank === '1');
+  }
+
+  function askPromotion(color, callback) {
+    promoChoices.innerHTML = '';
+    ['q', 'r', 'b', 'n'].forEach(type => {
+      const btn = document.createElement('button');
+      btn.textContent = PIECE_GLYPHS[color][type];
+      btn.className = 'secondary';
+      btn.addEventListener('click', () => {
+        promoModal.style.display = 'none';
+        callback(type);
+      });
+      promoChoices.appendChild(btn);
+    });
+    promoModal.style.display = 'flex';
+  }
+
+  // --- Pointer-based drag and drop ---
+  let dragState = null;
+
+  function onPointerDown(e) {
+    const pieceEl = e.target.closest('.piece');
+    if (!pieceEl || pieceEl.classList.contains('locked')) return;
+    const from = pieceEl.dataset.square;
+    e.preventDefault();
+    dragState = { from, pieceEl, glyph: pieceEl.textContent, color: pieceEl.classList.contains('white') ? 'white' : 'black' };
+    pieceEl.classList.add('dragging');
+    ghostEl.textContent = dragState.glyph;
+    ghostEl.className = 'piece ' + dragState.color;
+    ghostEl.style.display = 'block';
+    moveGhost(e.clientX, e.clientY);
+    showLegalMoves(from);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+  }
+
+  function moveGhost(x, y) {
+    ghostEl.style.left = x + 'px';
+    ghostEl.style.top = y + 'px';
+  }
+
+  function onPointerMove(e) {
+    if (!dragState) return;
+    moveGhost(e.clientX, e.clientY);
+  }
+
+  function onPointerUp(e) {
+    if (!dragState) return;
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', onPointerUp);
+    ghostEl.style.display = 'none';
+    dragState.pieceEl.classList.remove('dragging');
+    clearHighlights();
+
+    const to = squareFromPoint(e.clientX, e.clientY);
+    const from = dragState.from;
+    dragState = null;
+    if (!to || to === from) return;
+
+    const legal = chess.moves({ square: from, verbose: true }).some(m => m.to === to);
+    if (!legal) return;
+
+    if (needsPromotion(from, to)) {
+      const piece = chess.get(from);
+      askPromotion(piece.color, (type) => commitMove(from, to, type));
+    } else {
+      commitMove(from, to);
+    }
+  }
+
+  boardEl.addEventListener('pointerdown', onPointerDown);
+
+  document.getElementById('flip-btn').addEventListener('click', () => {
+    flipped = !flipped;
+    renderBoard();
+  });
+
+  document.getElementById('new-btn').addEventListener('click', () => {
+    if (!confirm('Start a brand new game? This creates a fresh link.')) return;
+    moveList = [];
+    chess = new Chess();
+    lastMoveSquares = null;
+    flipped = false;
+    render();
+  });
+
+  document.getElementById('copy-btn').addEventListener('click', async () => {
+    const url = linkInput.value;
+    try {
+      await navigator.clipboard.writeText(url);
+      flashCopied();
+    } catch (err) {
+      linkInput.select();
+      try {
+        document.execCommand('copy');
+        flashCopied();
+      } catch (err2) {
+        alert('Copy failed — please select the text and copy manually.');
+      }
+    }
+  });
+
+  function flashCopied() {
+    copiedMsg.style.visibility = 'visible';
+    setTimeout(() => { copiedMsg.style.visibility = 'hidden'; }, 1500);
+  }
+
+  window.addEventListener('hashchange', () => {
+    loadFromHash();
+    render();
+  });
+
+  loadFromHash();
+  render();
+})();
+</script>
+</body>
+</html>
