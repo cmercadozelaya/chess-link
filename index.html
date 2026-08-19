@@ -157,6 +157,8 @@
   button:hover { background: var(--gold-light); }
   button.secondary { background: #1c5a37; color: var(--cream); }
   button.secondary:hover { background: #216941; }
+  button.danger { background: #7a3030; color: var(--cream); }
+  button.danger:hover { background: #953a3a; }
   .controls { display: flex; gap: 8px; flex-wrap: wrap; }
   .history {
     background: var(--panel);
@@ -169,6 +171,19 @@
   }
   .history ol { margin: 0; padding-left: 20px; }
   .history li { margin-bottom: 2px; }
+  .captured-box {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 0.85rem;
+  }
+  .captured-row { display: flex; align-items: center; gap: 6px; }
+  .cap-label { color: var(--ink-muted); flex-shrink: 0; }
+  .cap-pieces { font-size: 1.15rem; letter-spacing: 2px; }
   #promo-modal {
     position: fixed;
     inset: 0;
@@ -205,6 +220,10 @@
   </div>
   <div class="panel">
     <div class="status" id="status"></div>
+    <div class="captured-box">
+      <div class="captured-row"><span class="cap-label">White captured:</span><span class="cap-pieces" id="captured-by-white"></span></div>
+      <div class="captured-row"><span class="cap-label">Black captured:</span><span class="cap-pieces" id="captured-by-black"></span></div>
+    </div>
     <div class="link-box">
       <label>Send this link to your opponent:</label>
       <div class="link-row">
@@ -214,6 +233,8 @@
       <div class="copied-msg" id="copied-msg" style="visibility:hidden">Copied!</div>
     </div>
     <div class="controls">
+      <button class="secondary" id="draw-btn">Offer draw</button>
+      <button class="danger" id="resign-btn">Resign</button>
       <button class="secondary" id="new-btn">New game</button>
     </div>
     <div class="history">
@@ -269,6 +290,7 @@
   let gameId = null;
   let gameRef = null;
   let myColor = null; // 'w' | 'b' | 'spectator'
+  let gameStatus = null; // null | {type:'resign', by} | {type:'drawOffer', by} | {type:'draw'}
 
   function genGameId() {
     return Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8);
@@ -291,6 +313,12 @@
     }
     localStorage.setItem(roleStorageKey(id), role);
     return role;
+  }
+
+  const BASE_TITLE = 'Link Chess';
+  function updateTitle() {
+    const myTurn = (myColor === 'w' || myColor === 'b') && chess.turn() === myColor && !gameEnded();
+    document.title = myTurn ? '• Your move — ' + BASE_TITLE : BASE_TITLE;
   }
 
   function roleLabel() {
@@ -334,6 +362,7 @@
     gameRef.on('value', (snapshot) => {
       const data = snapshot.val();
       const moves = (data && data.moves) ? data.moves : [];
+      gameStatus = (data && data.status) ? data.status : null;
       rebuildFromMoves(moves);
       render();
     });
@@ -393,7 +422,7 @@
           pEl.className = 'piece ' + (piece.color === 'w' ? 'white' : 'black');
           pEl.textContent = PIECE_GLYPHS[piece.color][piece.type];
           pEl.dataset.square = sq;
-          const draggable = piece.color === turn && piece.color === myColor && !chess.game_over();
+          const draggable = piece.color === turn && piece.color === myColor && !chess.game_over() && !gameEnded();
           if (!draggable) pEl.classList.add('locked');
           sqEl.appendChild(pEl);
         }
@@ -428,7 +457,22 @@
     return sqEl ? sqEl.dataset.square : null;
   }
 
+  function gameEnded() {
+    return chess.game_over() || (gameStatus && (gameStatus.type === 'resign' || gameStatus.type === 'draw'));
+  }
+
+  function colorName(c) {
+    return c === 'w' ? 'White' : 'Black';
+  }
+
   function statusText() {
+    if (gameStatus && gameStatus.type === 'resign') {
+      const winner = gameStatus.by === 'w' ? 'Black' : 'White';
+      return '<b>' + colorName(gameStatus.by) + ' resigned.</b> ' + winner + ' wins.';
+    }
+    if (gameStatus && gameStatus.type === 'draw') {
+      return '<b>Draw</b> agreed.';
+    }
     if (chess.in_checkmate()) {
       const winner = chess.turn() === 'w' ? 'Black' : 'White';
       return '<b>Checkmate!</b> ' + winner + ' wins.';
@@ -438,7 +482,11 @@
     if (chess.in_draw()) return '<b>Draw</b> (50-move rule or insufficient material).';
     const side = chess.turn() === 'w' ? 'White' : 'Black';
     const check = chess.in_check() ? ' — <b>Check!</b>' : '';
-    return '<b>' + side + '</b> to move' + check + '.';
+    let text = '<b>' + side + '</b> to move' + check + '.';
+    if (gameStatus && gameStatus.type === 'drawOffer' && gameStatus.by !== myColor) {
+      text += ' ' + colorName(gameStatus.by) + ' offered a draw.';
+    }
+    return text;
   }
 
   function renderHistory() {
@@ -451,11 +499,46 @@
     });
   }
 
+  function renderCaptured() {
+    const captured = { w: [], b: [] };
+    chess.history({ verbose: true }).forEach(mv => {
+      if (mv.captured) {
+        const capturingColor = mv.color;
+        captured[capturingColor].push(mv.captured);
+      }
+    });
+    const order = { q: 0, r: 1, b: 2, n: 3, p: 4 };
+    const sortAndRender = (list, byColor) => list
+      .slice()
+      .sort((a, b) => order[a] - order[b])
+      .map(type => PIECE_GLYPHS[byColor === 'w' ? 'b' : 'w'][type])
+      .join(' ');
+    document.getElementById('captured-by-white').textContent = sortAndRender(captured.w, 'w');
+    document.getElementById('captured-by-black').textContent = sortAndRender(captured.b, 'b');
+  }
+
+  function renderControls() {
+    const drawBtn = document.getElementById('draw-btn');
+    const resignBtn = document.getElementById('resign-btn');
+    const canAct = (myColor === 'w' || myColor === 'b') && !gameEnded();
+    drawBtn.style.display = canAct ? '' : 'none';
+    resignBtn.style.display = canAct ? '' : 'none';
+    if (!canAct) return;
+    if (gameStatus && gameStatus.type === 'drawOffer' && gameStatus.by !== myColor) {
+      drawBtn.textContent = 'Accept draw';
+    } else {
+      drawBtn.textContent = 'Offer draw';
+    }
+  }
+
   function render() {
     renderBoard();
     statusEl.innerHTML = roleLabel() + '<br>' + statusText();
     renderHistory();
+    renderCaptured();
+    renderControls();
     updateUrlBar();
+    updateTitle();
   }
 
   function commitMove(from, to, promotion) {
@@ -464,7 +547,10 @@
     moveList.push(from + to + (promotion || ''));
     lastMoveSquares = { from, to };
     render();
-    gameRef.set({ moves: moveList });
+    gameRef.child('moves').set(moveList);
+    if (gameStatus && gameStatus.type === 'drawOffer') {
+      gameRef.child('status').remove();
+    }
     return true;
   }
 
@@ -552,6 +638,21 @@
   });
 
   startBtn.addEventListener('click', startNewGame);
+
+  document.getElementById('resign-btn').addEventListener('click', () => {
+    if (myColor !== 'w' && myColor !== 'b') return;
+    if (!confirm('Are you sure you want to resign?')) return;
+    gameRef.child('status').set({ type: 'resign', by: myColor });
+  });
+
+  document.getElementById('draw-btn').addEventListener('click', () => {
+    if (myColor !== 'w' && myColor !== 'b') return;
+    if (gameStatus && gameStatus.type === 'drawOffer' && gameStatus.by !== myColor) {
+      gameRef.child('status').set({ type: 'draw' });
+    } else {
+      gameRef.child('status').set({ type: 'drawOffer', by: myColor });
+    }
+  });
 
   document.getElementById('copy-btn').addEventListener('click', async () => {
     const url = linkInput.value;
