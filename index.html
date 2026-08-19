@@ -353,6 +353,54 @@
     }
   }
 
+  let audioCtx = null;
+  function getAudioCtx() {
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch (e) { return null; }
+    }
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    return audioCtx;
+  }
+
+  function playTone(freq, duration, type, gainPeak) {
+    const ctx = getAudioCtx();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(gainPeak, ctx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + duration);
+  }
+
+  function playMoveSound() { playTone(720, 0.09, 'sine', 0.18); }
+  function playCaptureSound() { playTone(280, 0.16, 'triangle', 0.22); }
+  function playCheckSound() {
+    playTone(520, 0.09, 'sine', 0.2);
+    setTimeout(() => playTone(760, 0.12, 'sine', 0.22), 90);
+  }
+
+  let soundMoveCount = null;
+  function maybePlayMoveSound() {
+    const count = moveList.length;
+    if (soundMoveCount === null || count <= soundMoveCount) {
+      soundMoveCount = count;
+      return;
+    }
+    soundMoveCount = count;
+    if (chess.in_check()) { playCheckSound(); return; }
+    const verbose = chess.history({ verbose: true });
+    const lastMove = verbose[verbose.length - 1];
+    if (lastMove && lastMove.captured) { playCaptureSound(); return; }
+    playMoveSound();
+  }
+
   function roleLabel() {
     if (myColor === 'w') return 'You are playing <b>White</b>.';
     if (myColor === 'b') return 'You are playing <b>Black</b>.';
@@ -388,6 +436,7 @@
   async function attachGameListener(id) {
     if (gameRef) gameRef.off();
     gameId = id;
+    soundMoveCount = null;
     myColor = await assignRole(id);
     flipped = myColor === 'b';
     gameRef = db.ref('games/' + gameId);
@@ -572,6 +621,7 @@
     updateUrlBar();
     updateTitle();
     updateNotifyBtn();
+    maybePlayMoveSound();
   }
 
   function commitMove(from, to, promotion) {
