@@ -317,6 +317,7 @@
     if (gameRef) gameRef.off();
     gameId = id;
     myColor = await assignRole(id);
+    flipped = myColor === 'b';
     gameRef = db.ref('games/' + gameId);
     gameRef.on('value', (snapshot) => {
       const data = snapshot.val();
