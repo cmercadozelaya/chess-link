@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Link Connect Four</title>
+
+<!--
+  This one line loads code that other people already wrote, so we don't have
+  to build our own "live-sync" system from scratch:
+    firebase -> a free online database that instantly sends updates to
+                everyone looking at the same game, so both players see
+                moves show up without refreshing the page.
+  (Unlike the chess game in this same site, Connect Four's rules are simple
+  enough that we just write them ourselves further down, instead of using an
+  external rules library.)
+-->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
+<!--
+  ============================================================
+  STYLE SHEET (the "look" of the page)
+  ============================================================
+  Everything between <style> and </style> only controls appearance -
+  colors, sizes, spacing. It never decides what happens when you click
+  something; that's all down in the <script> section near the bottom.
+-->
+<style>
+  /* Named colors we reuse everywhere, like a paint palette. Changing a value
+     here changes it everywhere that color is used on the page. Most of these
+     match the chess game elsewhere on this site, so the two games feel like
+     part of the same family. */
+  :root {
+    --felt: #0f3d24;        /* dark green background color, like a card table */
+    --felt-light: #145530;  /* lighter green, used for a subtle glow effect behind the board */
+    --panel: #124a2c;       /* background color of the info boxes (status, link box, history, etc.) */
+    --panel-border: #2c6b45;/* thin border color around those info boxes */
+    --gold: #e0b24a;        /* gold accent color, used for buttons */
+    --gold-light: #f0cd7a;  /* lighter gold, used for hover effects and important text */
+    --cream: #f2e9d8;       /* main text color (an off-white, easy to read on dark green) */
+    --ink-muted: #b9d2c2;   /* dimmer text color, used for less important labels */
+    --frame: #1c5fa8;       /* the classic blue plastic color of a Connect Four frame */
+    --frame-dark: #144a86;  /* a darker blue, used for the frame's shadow/depth */
+    --slot: #0a2f57;        /* color of an empty hole in the frame */
+    --disc-red: #d9433e;    /* one player's disc color */
+    --disc-yellow: #e8c93a; /* the other player's disc color */
+  }
+  * { box-sizing: border-box; } /* a technical CSS default that makes sizing behave predictably */
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; /* use whatever clean font the visitor's device already has */
+    background: radial-gradient(ellipse at top, var(--felt-light) 0%, var(--felt) 55%, #082416 100%); /* the green "felt table" background */
+    color: var(--cream);
+    margin: 0;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center; /* keeps everything centered horizontally on the page */
+    min-height: 100vh;   /* page always fills at least the full height of the screen */
+  }
+  h1 { font-size: 1.3rem; margin: 0 0 12px; color: var(--gold-light); font-weight: 600; letter-spacing: 0.02em; }
+  a { color: var(--gold-light); }
+
+  /* .layout holds the board on the left and the info panel on the right (or stacked, on narrow screens) */
+  .layout {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap; /* if the screen is too narrow, the panel drops below the board instead of squishing */
+    justify-content: center;
+    align-items: flex-start;
+  }
+
+  /* #board-wrap is the blue plastic frame that holds the 7x6 grid of holes */
+  #board-wrap {
+    width: min(94vw, 560px);
+    background: linear-gradient(var(--frame), var(--frame-dark)); /* gives the frame a subtle 3D "plastic" look */
+    border-radius: 14px;
+    padding: 14px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.45), 0 0 0 1px rgba(0,0,0,0.3); /* drop-shadow so the board looks like it's sitting above the table */
+  }
+
+  /* #board is the row of 7 columns; each column is one vertical stack of 6 holes */
+  #board {
+    display: flex;
+    gap: 4px;
+  }
+
+  /* .column is one of the 7 clickable columns you drop a piece into */
+  .column {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    cursor: pointer;
+    border-radius: 6px;
+    padding: 4px;
+  }
+  .column.playable:hover { background: rgba(255,255,255,0.08); } /* subtle highlight so you can see which column you're about to drop into */
+  .column.disabled { cursor: default; } /* shown when it's not your turn, the column is full, or the game already ended */
+
+  /* .slot is a single hole in the frame - either empty, or holding a red/yellow disc */
+  .slot {
+    width: 100%;
+    aspect-ratio: 1 / 1; /* keeps every hole perfectly circular no matter the screen width */
+    border-radius: 50%;
+    background: var(--slot);
+    box-shadow: inset 0 3px 6px rgba(0,0,0,0.6); /* makes each hole look slightly recessed, like a real punched-out slot */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  /* .disc is the colored circle placed inside a slot once a piece has been dropped there */
+  .disc {
+    width: 88%;
+    height: 88%;
+    border-radius: 50%;
+  }
+  .disc.r { background: radial-gradient(circle at 35% 30%, #f08a86, var(--disc-red)); } /* a light highlight near the top-left makes it look glossy/3D */
+  .disc.y { background: radial-gradient(circle at 35% 30%, #f5e08a, var(--disc-yellow)); }
+  .disc.last-move { box-shadow: 0 0 0 3px var(--gold-light); } /* rings the most recently dropped disc so it's easy to spot */
+
+  /* .panel is the whole right-hand column: status box, link box, buttons, and history */
+  .panel {
+    width: min(90vw, 340px);
+    display: flex;
+    flex-direction: column;
+    gap: 12px; /* even spacing between each box in the panel */
+  }
+
+  /* .status is the box at the top of the panel that says whose turn it is / who won / etc. */
+  .status {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 0.95rem;
+    min-height: 3.2em; /* keeps a stable height so the layout doesn't jump around as the text changes */
+  }
+  .status b { color: var(--gold-light); } /* bold text inside the status box (like "wins!") is shown in gold */
+
+  /* .link-box is the box containing the shareable game link and the Copy button */
+  .link-box {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .link-box label { display: block; font-size: 0.8rem; color: var(--ink-muted); margin-bottom: 6px; }
+  .link-row { display: flex; gap: 6px; }
+  .link-row input {
+    flex: 1; /* the text box stretches to fill the space, leaving just enough room for the Copy button */
+    padding: 8px;
+    border-radius: 6px;
+    border: 1px solid var(--panel-border);
+    background: #08200f;
+    color: var(--cream);
+    font-size: 0.8rem;
+  }
+
+  /* Buttons throughout the page. "secondary" and "danger" are alternate colorings for less-important
+     or destructive actions (like Resign), so they visually stand out from the main gold buttons. */
+  button {
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: none;
+    background: var(--gold);
+    color: #1a2e1f;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+  button:hover { background: var(--gold-light); }
+  button.secondary { background: #1c5a37; color: var(--cream); }
+  button.secondary:hover { background: #216941; }
+  button.danger { background: #7a3030; color: var(--cream); } /* used for the Resign button - reddish, to signal "careful" */
+  button.danger:hover { background: #953a3a; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; } /* row(s) of buttons, wraps to a new line if the panel is narrow */
+
+  /* .history is the box listing every move played so far */
+  .history {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    max-height: 220px;
+    overflow-y: auto; /* if the list gets long, it scrolls inside its box instead of growing forever */
+    font-size: 0.85rem;
+  }
+  .history ol { margin: 0; padding-left: 20px; }
+  .history li { margin-bottom: 2px; }
+  .copied-msg { color: var(--gold-light); font-size: 0.8rem; } /* the little "Copied!" confirmation text after clicking Copy */
+</style>
+</head>
+<body>
+<h1>Link Connect Four — drop a piece, then send the link</h1>
+
+<!--
+  ============================================================
+  PAGE CONTENT (the actual boxes, buttons, and text on screen)
+  ============================================================
+  There are two big sections below that are never both visible at once:
+    1. #landing     -> shown before a game exists (just a "Start new game" button)
+    2. #game-layout -> shown once a game is underway (the board + side panel)
+  The script further down decides which one to show, based on whether the
+  page's link already contains a game to join.
+-->
+
+<!-- The very first screen a brand-new visitor sees: nothing to play yet, just a button to begin. -->
+<div id="landing" style="display:none; flex-direction:column; align-items:center; gap:14px; max-width:400px; text-align:center;">
+  <p>Start a game, then send the link to your opponent. The link stays the same for the whole game — just refresh it to see the other player's move.</p>
+  <button id="start-btn">Start new game</button>
+  <p><a href="index.html">&larr; Back to all games</a></p>
+</div>
+
+<!-- The actual game screen: board on the left, everything else on the right. -->
+<div class="layout" id="game-layout" style="display:none;">
+  <div id="board-wrap">
+    <div id="board"></div> <!-- the 7 columns of 6 holes each get created and inserted here by the script -->
+  </div>
+  <div class="panel">
+    <div class="status" id="status"></div> <!-- "Red to move", "Yellow wins!", etc. gets written in here -->
+
+    <!-- The shareable link box: a read-only text field plus a one-click Copy button -->
+    <div class="link-box">
+      <label>Send this link to your opponent:</label>
+      <div class="link-row">
+        <input type="text" id="link-input" readonly>
+        <button id="copy-btn">Copy</button>
+      </div>
+      <div class="copied-msg" id="copied-msg" style="visibility:hidden">Copied!</div>
+    </div>
+
+    <!-- Draw / resign / start-a-new-game buttons -->
+    <div class="controls">
+      <button class="secondary" id="draw-btn">Offer draw</button>
+      <button class="danger" id="resign-btn">Resign</button>
+      <button class="secondary" id="new-btn">New game</button>
+    </div>
+
+    <!-- One-time button to turn on "it's your turn" notifications from the browser -->
+    <div class="controls">
+      <button class="secondary" id="notify-btn">Enable notifications</button>
+    </div>
+
+    <!-- The running list of every move played -->
+    <div class="history">
+      <label style="font-size:0.8rem;color:var(--ink-muted);">Move history</label>
+      <ol id="history-list"></ol>
+    </div>
+
+    <p style="font-size:0.8rem;"><a href="index.html">&larr; Back to all games</a></p>
+  </div>
+</div>
+
+<script>
+/*
+  ============================================================
+  THE PROGRAM ITSELF
+  ============================================================
+  Everything from here down is the actual "brain" of the game: it decides what
+  happens when you click a column, keeps both players' boards in sync over the
+  internet, remembers whose turn it is, checks for four-in-a-row, and updates
+  all the boxes you see above.
+
+  It's wrapped in "(function () { ... })();" purely as good practice - it keeps
+  all of this code's names/variables private to this page, so they can't
+  accidentally clash with anything else.
+*/
+(function () {
+  // --------------------------------------------------------
+  // Connect to the shared online database (Firebase).
+  // This is what lets a move made on one phone/computer instantly show up on
+  // the other player's phone/computer - both are just "looking at" the same
+  // record in this database at the same time. It's the same underlying
+  // database used by the chess game on this site, just a different section
+  // of it ("connectfour/..." instead of "games/..."), so the two games never
+  // mix up each other's data.
+  // --------------------------------------------------------
+  const firebaseConfig = {
+    apiKey: "AIzaSyBkjv9MepHUKol6NSf7qNt5i48_1L2JsTM",
+    authDomain: "chess-link-6decc.firebaseapp.com",
+    databaseURL: "https://chess-link-6decc-default-rtdb.firebaseio.com",
+    projectId: "chess-link-6decc",
+    storageBucket: "chess-link-6decc.firebasestorage.app",
+    messagingSenderId: "939953923414",
+    appId: "1:939953923414:web:cc925aa5e4088c8aa1e2f7"
+  };
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database(); // "db" = our connection to that shared online database
+
+  const ROWS = 6;
+  const COLS = 7;
+
+  // Grabbing references to the boxes/buttons defined in the HTML above, so the code
+  // below can read from them or change what's shown inside them.
+  const landingEl = document.getElementById('landing');
+  const gameLayoutEl = document.getElementById('game-layout');
+  const startBtn = document.getElementById('start-btn');
+  const boardEl = document.getElementById('board');
+  const statusEl = document.getElementById('status');
+  const linkInput = document.getElementById('link-input');
+  const copiedMsg = document.getElementById('copied-msg');
+  const historyList = document.getElementById('history-list');
+
+  // These variables hold "the current state of the game" while the page is open.
+  // Think of them as the program's short-term memory.
+  let board = makeEmptyBoard(); // a 6x7 grid; each cell is null (empty), 'r' (red), or 'y' (yellow)
+  let currentPlayer = 'r';      // whose turn it is right now: red always goes first
+  let moveList = [];            // every move played so far, written as just the column number dropped into (0-6)
+  let lastMove = null;          // the {row, col} of the most recently dropped disc (used to highlight it)
+  let winner = null;            // 'r', 'y', or 'draw' once the game has ended by four-in-a-row or a full board; otherwise null
+  let gameId = null;            // the unique code identifying this particular game (the part after "#g=" in the link)
+  let gameRef = null;           // our live connection to this specific game's data in the online database
+  let myColor = null;           // which side THIS browser is playing: 'r' (Red), 'y' (Yellow), or 'spectator' (just watching)
+  let gameStatus = null;        // records special game-ending events like a resignation or an agreed draw
+
+  // Builds a brand new, completely empty 6-row by 7-column grid to start a game with.
+  function makeEmptyBoard() {
+    return Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+  }
+
+  // Makes up a random, unique-enough code to identify a brand new game (used in the shareable link).
+  function genGameId() {
+    return Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8);
+  }
+
+  // Builds the name used to remember, in this browser only, which color you were assigned for a given game.
+  function roleStorageKey(id) {
+    return 'connect4-role-' + id;
+  }
+
+  // Figures out whether THIS browser should play Red, Yellow, or just spectate.
+  // The very first browser to open a game's link claims Red; the second claims Yellow;
+  // anyone after that becomes a spectator (can watch, but not drop pieces).
+  // This choice is remembered on this device, so refreshing the page won't reassign you.
+  async function assignRole(id) {
+    const stored = localStorage.getItem(roleStorageKey(id)); // "localStorage" = a small memory box saved on this device only
+    if (stored) return stored; // already decided before - just reuse that answer
+    let role;
+    // "transaction" here is a safe way of saying "claim this seat, but only if nobody already has it" -
+    // it prevents two people clicking at the exact same instant from both becoming Red.
+    const rTx = await db.ref('connectfour/' + id + '/claims/r').transaction(val => val ? undefined : true);
+    if (rTx.committed) {
+      role = 'r';
+    } else {
+      const yTx = await db.ref('connectfour/' + id + '/claims/y').transaction(val => val ? undefined : true);
+      role = yTx.committed ? 'y' : 'spectator';
+    }
+    localStorage.setItem(roleStorageKey(id), role); // remember this choice for next time
+    return role;
+  }
+
+  // --------------------------------------------------------
+  // Browser tab title + "it's your turn" notification
+  // --------------------------------------------------------
+  const BASE_TITLE = 'Link Connect Four';
+  let wasMyTurn = false; // remembers whether it was your turn the last time we checked, so we can notice the moment it *becomes* your turn
+  function updateTitle() {
+    const myTurn = (myColor === 'r' || myColor === 'y') && currentPlayer === myColor && !gameEnded();
+    document.title = myTurn ? '• Your move — ' + BASE_TITLE : BASE_TITLE; // changes the text shown on the browser tab
+    if (myTurn && !wasMyTurn) notifyMyTurn(); // only fire a notification at the exact moment your turn begins, not every time we redraw the page
+    wasMyTurn = myTurn;
+  }
+
+  // Shows a real desktop/phone notification (the kind that pops up outside the browser window)
+  // when it becomes your turn, but only if you're not currently looking at the tab, and only if
+  // you've previously agreed to allow notifications.
+  function notifyMyTurn() {
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    if (document.hasFocus()) return; // don't bother notifying if you're already looking at the page
+    const n = new Notification('Your move', {
+      body: 'It\'s your turn in Link Connect Four.',
+      tag: 'connect-four-turn-' + gameId
+    });
+    n.onclick = () => { window.focus(); n.close(); }; // clicking the notification jumps you back to this tab
+  }
+
+  // Keeps the "Enable notifications" button's text/appearance matching whether permission
+  // has been granted, denied, or not yet decided.
+  function updateNotifyBtn() {
+    const btn = document.getElementById('notify-btn');
+    if (!btn) return;
+    if (typeof Notification === 'undefined') { btn.style.display = 'none'; return; } // this browser doesn't support notifications at all
+    if (Notification.permission === 'granted') {
+      btn.textContent = 'Notifications on';
+      btn.disabled = true;
+    } else if (Notification.permission === 'denied') {
+      btn.textContent = 'Notifications blocked';
+      btn.disabled = true;
+    } else {
+      btn.textContent = 'Enable notifications';
+      btn.disabled = false;
+    }
+  }
+
+  // --------------------------------------------------------
+  // Sound effects
+  // --------------------------------------------------------
+  // These sounds aren't audio files - they're generated on the spot using the browser's
+  // built-in "Web Audio" feature, like a tiny synthesizer. That's why the game works
+  // without downloading anything extra.
+  let audioCtx = null;
+  function getAudioCtx() {
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch (e) { return null; } // if sound isn't supported for some reason, just skip it quietly
+    }
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    return audioCtx;
+  }
+
+  // Plays one short musical tone. "freq" is the pitch, "duration" is how long it rings,
+  // "type" is the tone quality (like choosing between a smoother or twangier instrument sound).
+  function playTone(freq, duration, type, gainPeak) {
+    const ctx = getAudioCtx();
+    if (!ctx) return;
+    const osc = ctx.createOscillator(); // the thing that actually produces the pitch
+    const gain = ctx.createGain();      // controls how loud it is, and fades it out smoothly instead of cutting off abruptly
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(gainPeak, ctx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + duration);
+  }
+
+  // The two distinct sounds used in the game: an ordinary drop, and a win.
+  function playDropSound() { playTone(500, 0.1, 'sine', 0.2); }
+  function playWinSound() {
+    playTone(520, 0.09, 'sine', 0.2);
+    setTimeout(() => playTone(660, 0.09, 'sine', 0.2), 90); // three quick rising notes, like a little fanfare
+    setTimeout(() => playTone(880, 0.16, 'sine', 0.22), 180);
+  }
+
+  // Decides which sound (if any) to play, based on what just happened on the board.
+  // It only plays a sound when the move count has actually gone UP since last time we checked,
+  // so redrawing the page for other reasons (like just opening it) doesn't make noise.
+  let soundMoveCount = null;
+  function maybePlaySound() {
+    const count = moveList.length;
+    if (soundMoveCount === null || count <= soundMoveCount) {
+      soundMoveCount = count;
+      return;
+    }
+    soundMoveCount = count;
+    if (winner === 'r' || winner === 'y') { playWinSound(); return; }
+    playDropSound();
+  }
+
+  // Turns the single-letter color code ('r' or 'y') into the full word "Red" or "Yellow".
+  function colorName(c) {
+    return c === 'r' ? 'Red' : 'Yellow';
+  }
+
+  // The short sentence shown in the status box telling you which side you're playing.
+  function roleLabel() {
+    if (myColor === 'r') return 'You are playing <b>Red</b>.';
+    if (myColor === 'y') return 'You are playing <b>Yellow</b>.';
+    if (myColor === 'spectator') return 'You are <b>spectating</b> this game.';
+    return '';
+  }
+
+  // Checks whether the piece just dropped at (row, col) completes a line of four - horizontally,
+  // vertically, or along either diagonal. It works by looking outward from that one piece in both
+  // directions along each of the four possible line directions and counting how many matching
+  // pieces are in a row (including the piece itself); four or more anywhere means a win.
+  function checkWin(grid, row, col, player) {
+    const directions = [
+      [0, 1],  // horizontal
+      [1, 0],  // vertical
+      [1, 1],  // diagonal, top-left to bottom-right
+      [1, -1]  // diagonal, top-right to bottom-left
+    ];
+    return directions.some(([dr, dc]) => {
+      let count = 1; // the dropped piece itself
+      count += countDirection(grid, row, col, dr, dc, player);
+      count += countDirection(grid, row, col, -dr, -dc, player);
+      return count >= 4;
+    });
+  }
+
+  // Starting one step away from (row, col) and continuing in one direction (dr, dc), counts how
+  // many cells in a row belong to "player" before hitting an empty cell, a different color, or the
+  // edge of the board.
+  function countDirection(grid, row, col, dr, dc, player) {
+    let count = 0;
+    let r = row + dr;
+    let c = col + dc;
+    while (r >= 0 && r < ROWS && c >= 0 && c < COLS && grid[r][c] === player) {
+      count++;
+      r += dr;
+      c += dc;
+    }
+    return count;
+  }
+
+  // True once every hole in the top row has a disc in it - since pieces always fall to the
+  // lowest empty spot, a full top row means the entire board underneath is full too.
+  function isBoardFull(grid) {
+    return grid[0].every(cell => cell !== null);
+  }
+
+  // Rebuilds the entire board from scratch by replaying every column-drop in order.
+  // This runs every time new data arrives from the online database, which is how a
+  // move made on one player's screen ends up correctly shown on the other player's screen.
+  function rebuildFromMoves(moves) {
+    board = makeEmptyBoard();
+    currentPlayer = 'r';
+    lastMove = null;
+    winner = null;
+    for (const col of moves) {
+      const row = lowestEmptyRow(board, col);
+      if (row === -1) break; // a move somehow doesn't make sense (column was full) - stop rebuilding rather than crash
+      board[row][col] = currentPlayer;
+      lastMove = { row, col };
+      if (checkWin(board, row, col, currentPlayer)) {
+        winner = currentPlayer;
+      } else if (isBoardFull(board)) {
+        winner = 'draw';
+      }
+      currentPlayer = currentPlayer === 'r' ? 'y' : 'r';
+    }
+    moveList = moves;
+  }
+
+  // Finds the row a dropped piece would land in for a given column - pieces always fall to
+  // settle on top of whatever is already stacked in that column (or the very bottom, if empty).
+  // Returns -1 if the column is already full to the top.
+  function lowestEmptyRow(grid, col) {
+    for (let r = ROWS - 1; r >= 0; r--) {
+      if (grid[r][col] === null) return r;
+    }
+    return -1;
+  }
+
+  // Builds the exact web address for the current game, so it can be shown in the "share this link" box.
+  function currentUrl() {
+    const base = window.location.origin + window.location.pathname;
+    return base + '#g=' + gameId;
+  }
+
+  // Updates the shareable-link text box, and quietly updates the address bar to match
+  // (without actually reloading the page).
+  function updateUrlBar() {
+    const url = currentUrl();
+    linkInput.value = url;
+    history.replaceState(null, '', url);
+  }
+
+  // Connects this browser to one specific game's data in the online database, and figures out
+  // which color you'll be playing. From this point on, ANY time someone (you or your opponent)
+  // drops a piece, this code automatically re-runs and redraws the board - that's the "live sync" magic.
+  async function attachGameListener(id) {
+    if (gameRef) gameRef.off(); // stop listening to any previous game first, if we were already watching one
+    gameId = id;
+    soundMoveCount = null;
+    myColor = await assignRole(id);
+    gameRef = db.ref('connectfour/' + gameId);
+    gameRef.on('value', (snapshot) => {
+      // This block runs automatically every time the game's data changes in the database -
+      // including the very first time we connect, and again every time either player moves.
+      const data = snapshot.val();
+      const moves = (data && data.moves) ? data.moves : [];
+      gameStatus = (data && data.status) ? data.status : null;
+      rebuildFromMoves(moves);
+      render(); // redraw everything on screen to match the latest data
+    });
+  }
+
+  // Creates a brand new game: makes up a game ID, saves an empty game to the database,
+  // marks yourself as Red, and starts watching that game.
+  async function startNewGame() {
+    const id = genGameId();
+    await db.ref('connectfour/' + id).set({ moves: [], claims: { r: true } });
+    localStorage.setItem(roleStorageKey(id), 'r');
+    await attachGameListener(id);
+    showGame();
+  }
+
+  // Switches from the "Start new game" screen to the actual board+panel screen.
+  function showGame() {
+    landingEl.style.display = 'none';
+    gameLayoutEl.style.display = 'flex';
+  }
+
+  // Switches back to the "Start new game" screen (used when the page is opened with no game link).
+  function showLanding() {
+    landingEl.style.display = 'flex';
+    gameLayoutEl.style.display = 'none';
+  }
+
+  // True if the game is over for ANY reason - a normal four-in-a-row win, a full board draw,
+  // or someone resigning, or both sides agreeing to a draw.
+  function gameEnded() {
+    return winner !== null || (gameStatus && (gameStatus.type === 'resign' || gameStatus.type === 'draw'));
+  }
+
+  // Draws the entire board from scratch: all 7 columns, all 6 holes in each, and any disc
+  // sitting in them. This function is called any time something changes and the board needs
+  // to be redrawn.
+  function renderBoard() {
+    boardEl.innerHTML = ''; // clear out the old board completely before drawing the new one
+    const canPlay = (myColor === 'r' || myColor === 'y') && myColor === currentPlayer && !gameEnded();
+    for (let c = 0; c < COLS; c++) {
+      const colEl = document.createElement('div');
+      const columnPlayable = canPlay && lowestEmptyRow(board, c) !== -1; // you can only click a column that isn't already full
+      colEl.className = 'column ' + (columnPlayable ? 'playable' : 'disabled');
+      colEl.dataset.col = c;
+      for (let r = 0; r < ROWS; r++) {
+        const slotEl = document.createElement('div');
+        slotEl.className = 'slot';
+        const piece = board[r][c];
+        if (piece) {
+          const discEl = document.createElement('div');
+          discEl.className = 'disc ' + piece + (lastMove && lastMove.row === r && lastMove.col === c ? ' last-move' : '');
+          slotEl.appendChild(discEl);
+        }
+        colEl.appendChild(slotEl);
+      }
+      if (columnPlayable) {
+        colEl.addEventListener('click', () => dropPiece(c));
+      }
+      boardEl.appendChild(colEl);
+    }
+  }
+
+  // Works out exactly what sentence should appear in the status box at any given moment -
+  // whose turn it is, or how the game ended if it has.
+  function statusText() {
+    if (gameStatus && gameStatus.type === 'resign') {
+      const resignWinner = gameStatus.by === 'r' ? 'Yellow' : 'Red';
+      return '<b>' + colorName(gameStatus.by) + ' resigned.</b> ' + resignWinner + ' wins.';
+    }
+    if (gameStatus && gameStatus.type === 'draw') {
+      return '<b>Draw</b> agreed.';
+    }
+    if (winner === 'draw') return '<b>Draw.</b> The board is full.';
+    if (winner === 'r' || winner === 'y') {
+      return '<b>' + colorName(winner) + ' wins!</b> Four in a row.';
+    }
+    let text = '<b>' + colorName(currentPlayer) + '</b> to move.';
+    if (gameStatus && gameStatus.type === 'drawOffer' && gameStatus.by !== myColor) {
+      text += ' ' + colorName(gameStatus.by) + ' offered a draw.';
+    }
+    return text;
+  }
+
+  // Rewrites the "Move history" list to show every column dropped into so far, in order.
+  function renderHistory() {
+    historyList.innerHTML = '';
+    let player = 'r';
+    moveList.forEach((col) => {
+      const li = document.createElement('li');
+      li.textContent = colorName(player) + ' → column ' + (col + 1);
+      historyList.appendChild(li);
+      player = player === 'r' ? 'y' : 'r';
+    });
+  }
+
+  // Updates the Resign/Offer-draw buttons: hides them entirely for spectators or once the
+  // game has ended, and changes "Offer draw" to "Accept draw" if your opponent already offered one.
+  function renderControls() {
+    const drawBtn = document.getElementById('draw-btn');
+    const resignBtn = document.getElementById('resign-btn');
+    const canAct = (myColor === 'r' || myColor === 'y') && !gameEnded();
+    drawBtn.style.display = canAct ? '' : 'none';
+    resignBtn.style.display = canAct ? '' : 'none';
+    if (!canAct) return;
+    if (gameStatus && gameStatus.type === 'drawOffer' && gameStatus.by !== myColor) {
+      drawBtn.textContent = 'Accept draw';
+    } else {
+      drawBtn.textContent = 'Offer draw';
+    }
+  }
+
+  // The main "redraw everything" function. Whenever the game state changes for any reason
+  // (you moved, your opponent moved, someone resigned, etc.), this one function is called
+  // to bring every part of the page up to date at once.
+  function render() {
+    renderBoard();
+    statusEl.innerHTML = roleLabel() + '<br>' + statusText();
+    renderHistory();
+    renderControls();
+    updateUrlBar();
+    updateTitle();
+    updateNotifyBtn();
+    maybePlaySound();
+  }
+
+  // Actually drops a piece: works out the column is still legal to play, updates the board,
+  // redraws the screen, and sends the move to the online database so your opponent's screen
+  // updates too.
+  function dropPiece(col) {
+    if (gameEnded() || currentPlayer !== myColor) return; // not your turn, or the game is already over
+    if (lowestEmptyRow(board, col) === -1) return; // column full - can't drop here
+    moveList.push(col);
+    render(); // optimistic redraw, so the game feels instant on the player's own screen
+    gameRef.child('moves').set(moveList); // send the updated move list to the shared database
+    if (gameStatus && gameStatus.type === 'drawOffer') {
+      gameRef.child('status').remove(); // dropping a piece instead of accepting counts as declining a pending draw offer
+    }
+  }
+
+  // --------------------------------------------------------
+  // Button click handlers
+  // --------------------------------------------------------
+  // Everything below just says "when this specific button is clicked, do this."
+
+  document.getElementById('new-btn').addEventListener('click', () => {
+    if (!confirm('Start a brand new game? This creates a fresh link.')) return; // asks for confirmation first, since this abandons the current game
+    startNewGame();
+  });
+
+  startBtn.addEventListener('click', startNewGame); // the big "Start new game" button on the very first screen
+
+  document.getElementById('notify-btn').addEventListener('click', async () => {
+    if (typeof Notification === 'undefined') return;
+    await Notification.requestPermission(); // this is what actually triggers the browser's "Allow notifications?" prompt
+    updateNotifyBtn();
+  });
+
+  document.getElementById('resign-btn').addEventListener('click', () => {
+    if (myColor !== 'r' && myColor !== 'y') return; // spectators can't resign a game they're not playing in
+    if (!confirm('Are you sure you want to resign?')) return;
+    gameRef.child('status').set({ type: 'resign', by: myColor }); // tells the database (and therefore the other player) that you resigned
+  });
+
+  document.getElementById('draw-btn').addEventListener('click', () => {
+    if (myColor !== 'r' && myColor !== 'y') return;
+    if (gameStatus && gameStatus.type === 'drawOffer' && gameStatus.by !== myColor) {
+      // your opponent already offered a draw, and you just clicked "Accept draw"
+      gameRef.child('status').set({ type: 'draw' });
+    } else {
+      // nobody has offered yet - record that YOU are now offering one
+      gameRef.child('status').set({ type: 'drawOffer', by: myColor });
+    }
+  });
+
+  document.getElementById('copy-btn').addEventListener('click', async () => {
+    const url = linkInput.value;
+    try {
+      await navigator.clipboard.writeText(url); // the modern, preferred way to copy text to the clipboard
+      flashCopied();
+    } catch (err) {
+      // Some browsers/situations block the method above, so this is a fallback: select the
+      // text in the box and use the older copy command instead.
+      linkInput.select();
+      try {
+        document.execCommand('copy');
+        flashCopied();
+      } catch (err2) {
+        alert('Copy failed — please select the text and copy manually.');
+      }
+    }
+  });
+
+  // Briefly shows the "Copied!" message after a successful copy, then hides it again after 1.5 seconds.
+  function flashCopied() {
+    copiedMsg.style.visibility = 'visible';
+    setTimeout(() => { copiedMsg.style.visibility = 'hidden'; }, 1500);
+  }
+
+  // --------------------------------------------------------
+  // Start-up: what happens the moment the page loads
+  // --------------------------------------------------------
+  // Looks at the page's own address to see if it already contains a game to join
+  // (something like "...#g=abc123"). If so, jump straight into that game. If not,
+  // show the "Start new game" screen instead.
+  function init() {
+    const hash = window.location.hash.replace(/^#/, '');
+    const params = new URLSearchParams(hash);
+    const g = params.get('g');
+    if (g) {
+      attachGameListener(g);
+      showGame();
+    } else {
+      showLanding();
+    }
+  }
+
+  init(); // this line is what actually kicks everything off when the page first opens
+})();
+</script>
+</body>
+</html>
