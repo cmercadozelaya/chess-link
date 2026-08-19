@@ -214,7 +214,6 @@
       <div class="copied-msg" id="copied-msg" style="visibility:hidden">Copied!</div>
     </div>
     <div class="controls">
-      <button class="secondary" id="flip-btn">Flip board</button>
       <button class="secondary" id="new-btn">New game</button>
     </div>
     <div class="history">
@@ -545,11 +544,6 @@
   }
 
   boardEl.addEventListener('pointerdown', onPointerDown);
-
-  document.getElementById('flip-btn').addEventListener('click', () => {
-    flipped = !flipped;
-    renderBoard();
-  });
 
   document.getElementById('new-btn').addEventListener('click', () => {
     if (!confirm('Start a brand new game? This creates a fresh link.')) return;
