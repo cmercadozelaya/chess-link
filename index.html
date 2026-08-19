@@ -237,6 +237,9 @@
       <button class="danger" id="resign-btn">Resign</button>
       <button class="secondary" id="new-btn">New game</button>
     </div>
+    <div class="controls">
+      <button class="secondary" id="notify-btn">Enable notifications</button>
+    </div>
     <div class="history">
       <label style="font-size:0.8rem;color:var(--ink-muted);">Move history</label>
       <ol id="history-list"></ol>
@@ -316,9 +319,38 @@
   }
 
   const BASE_TITLE = 'Link Chess';
+  let wasMyTurn = false;
   function updateTitle() {
     const myTurn = (myColor === 'w' || myColor === 'b') && chess.turn() === myColor && !gameEnded();
     document.title = myTurn ? '• Your move — ' + BASE_TITLE : BASE_TITLE;
+    if (myTurn && !wasMyTurn) notifyMyTurn();
+    wasMyTurn = myTurn;
+  }
+
+  function notifyMyTurn() {
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    if (document.hasFocus()) return;
+    const n = new Notification('Your move', {
+      body: 'It\'s your turn in Link Chess.',
+      tag: 'link-chess-turn-' + gameId
+    });
+    n.onclick = () => { window.focus(); n.close(); };
+  }
+
+  function updateNotifyBtn() {
+    const btn = document.getElementById('notify-btn');
+    if (!btn) return;
+    if (typeof Notification === 'undefined') { btn.style.display = 'none'; return; }
+    if (Notification.permission === 'granted') {
+      btn.textContent = 'Notifications on';
+      btn.disabled = true;
+    } else if (Notification.permission === 'denied') {
+      btn.textContent = 'Notifications blocked';
+      btn.disabled = true;
+    } else {
+      btn.textContent = 'Enable notifications';
+      btn.disabled = false;
+    }
   }
 
   function roleLabel() {
@@ -539,6 +571,7 @@
     renderControls();
     updateUrlBar();
     updateTitle();
+    updateNotifyBtn();
   }
 
   function commitMove(from, to, promotion) {
@@ -638,6 +671,12 @@
   });
 
   startBtn.addEventListener('click', startNewGame);
+
+  document.getElementById('notify-btn').addEventListener('click', async () => {
+    if (typeof Notification === 'undefined') return;
+    await Notification.requestPermission();
+    updateNotifyBtn();
+  });
 
   document.getElementById('resign-btn').addEventListener('click', () => {
     if (myColor !== 'w' && myColor !== 'b') return;
