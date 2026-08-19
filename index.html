@@ -256,9 +256,36 @@
   let lastMoveSquares = null; // {from, to}
   let gameId = null;
   let gameRef = null;
+  let myColor = null; // 'w' | 'b' | 'spectator'
 
   function genGameId() {
     return Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8);
+  }
+
+  function roleStorageKey(id) {
+    return 'chess-link-role-' + id;
+  }
+
+  async function assignRole(id) {
+    const stored = localStorage.getItem(roleStorageKey(id));
+    if (stored) return stored;
+    let role;
+    const wTx = await db.ref('games/' + id + '/claims/w').transaction(val => val ? undefined : true);
+    if (wTx.committed) {
+      role = 'w';
+    } else {
+      const bTx = await db.ref('games/' + id + '/claims/b').transaction(val => val ? undefined : true);
+      role = bTx.committed ? 'b' : 'spectator';
+    }
+    localStorage.setItem(roleStorageKey(id), role);
+    return role;
+  }
+
+  function roleLabel() {
+    if (myColor === 'w') return 'You are playing <b>White</b>.';
+    if (myColor === 'b') return 'You are playing <b>Black</b>.';
+    if (myColor === 'spectator') return 'You are <b>spectating</b> this game.';
+    return '';
   }
 
   function rebuildFromMoves(moves) {
@@ -286,9 +313,10 @@
     history.replaceState(null, '', url);
   }
 
-  function attachGameListener(id) {
+  async function attachGameListener(id) {
     if (gameRef) gameRef.off();
     gameId = id;
+    myColor = await assignRole(id);
     gameRef = db.ref('games/' + gameId);
     gameRef.on('value', (snapshot) => {
       const data = snapshot.val();
@@ -298,10 +326,11 @@
     });
   }
 
-  function startNewGame() {
+  async function startNewGame() {
     const id = genGameId();
-    db.ref('games/' + id).set({ moves: [] });
-    attachGameListener(id);
+    await db.ref('games/' + id).set({ moves: [], claims: { w: true } });
+    localStorage.setItem(roleStorageKey(id), 'w');
+    await attachGameListener(id);
     showGame();
   }
 
@@ -351,7 +380,7 @@
           pEl.className = 'piece ' + (piece.color === 'w' ? 'white' : 'black');
           pEl.textContent = PIECE_GLYPHS[piece.color][piece.type];
           pEl.dataset.square = sq;
-          const draggable = piece.color === turn && !chess.game_over();
+          const draggable = piece.color === turn && piece.color === myColor && !chess.game_over();
           if (!draggable) pEl.classList.add('locked');
           sqEl.appendChild(pEl);
         }
@@ -411,7 +440,7 @@
 
   function render() {
     renderBoard();
-    statusEl.innerHTML = statusText();
+    statusEl.innerHTML = roleLabel() + '<br>' + statusText();
     renderHistory();
     updateUrlBar();
   }
